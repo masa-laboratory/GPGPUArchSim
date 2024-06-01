@@ -45,23 +45,21 @@ language = 'zh_CN'
 html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
 html_show_sourcelink = False
+numfig = True
 
 # -- Options for EPUB output
 epub_show_urls = 'footnote'
 
 # -- Options for LaTex output
+# "atendofbody": r"\vspace*{\fill}\begin{flushright}\textbf{Jianchao Yang}\\\textbf{MASA-Laboratory, NUDT}\\\textbf{masa-lab@outlook.com}\end{flushright}",
+    
 latex_elements = {
     "papersize": "a4paper",
-    "atendofbody": r"\vspace*{\fill}\begin{flushright}\textbf{Jianchao Yang}\\\textbf{MASA-Laboratory, NUDT}\\\textbf{masa-lab@outlook.com}\end{flushright}",
-    'fontpkg': r"""
-\setmainfont{PingFang SC Regular}
-\setsansfont{PingFang SC Regular}
-\setmonofont{PingFang SC Regular}
-""",
     'fncychap': r'\usepackage[Bjornstrup]{fncychap}',
     'preamble': r'''
 \usepackage{ctex}
 \usepackage{bm}
+\usepackage{fontspec}
 \newcommand{\myproject}{''' + project + r'''}
 \newcommand{\mycopyright}{''' + copyright + r'''}
 \newcommand{\myauthor}{''' + author + r'''}

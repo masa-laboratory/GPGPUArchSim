@@ -9,5 +9,6 @@ Welcome to GPGPU Architectures and Simulations's documentation!
 .. toctree::
    :maxdepth: 2
    :caption: Contents:
+   :numbered:
 
-   Cache/example.rst
+   Cache/cache-access.rst
