@@ -341,7 +341,7 @@ Cache 的访问状态
     unsigned set_index = m_config.set_index(addr);
     // |-------|-------------|--------------|
     //            set_index   offset in-line
-    // |<--------tag-------->|
+    // |<--------tag--------> 0 0 0 0 0 0 0 |
     // 这里实际返回的是 {除 offset in-line 以外的所有位, offset in-line'b0}，即 
     // set index 也作为 tag 位的一部分了。
     new_addr_type tag = m_config.tag(addr);
