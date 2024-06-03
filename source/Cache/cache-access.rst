@@ -828,13 +828,13 @@ Cache 的访问状态
   级存储发送读请求。
   */
   void baseline_cache::send_read_request(new_addr_type addr,
-                                        new_addr_type block_addr,
-                                        unsigned cache_index, mem_fetch *mf,
-                                        unsigned time, bool &do_miss, bool &wb,
-                                        evicted_block_info &evicted,
-                                        std::list<cache_event> &events,
-                                        bool read_only, bool wa) {
-    //1. 如果是 Sector Cache：
+                                         new_addr_type block_addr,
+                                         unsigned cache_index, mem_fetch *mf,
+                                         unsigned time, bool &do_miss, bool &wb,
+                                         evicted_block_info &evicted,
+                                         std::list<cache_event> &events,
+                                         bool read_only, bool wa) {
+    // 1. 如果是 Sector Cache：
     //  mshr_addr 函数返回 mshr 的地址，该地址即为地址 addr 的 tag 位 + set index 
     //  位 + sector offset 位。即除 single sector byte offset 位 以外的所有位。
     //  |<----------mshr_addr----------->|
@@ -845,7 +845,7 @@ Cache 的访问状态
     //  |-------|-------------|-------------------|
     //             set_index     offset in-line
     //  |<----tag----> 0 0 0 0|
-    //2. 如果是 Line Cache：
+    // 2. 如果是 Line Cache：
     //  mshr_addr 函数返回 mshr 的地址，该地址即为地址 addr 的 tag 位 + set index 
     //  位。即除 single line byte off-set 位 以外的所有位。
     //  |<----mshr_addr--->|
@@ -857,7 +857,7 @@ Cache 的访问状态
     //             set_index     offset in-line
     //  |<----tag----> 0 0 0 0|
     //
-    //mshr_addr 定义：
+    // mshr_addr 定义：
     //   new_addr_type mshr_addr(new_addr_type addr) const {
     //     return addr & ~(new_addr_type)(m_atom_sz - 1);
     //   }
@@ -936,3 +936,449 @@ Cache 的访问状态
       assert(0);
   }
 
+.. code-block:: c
+  :lineno-start: 0
+  :emphasize-lines: 0
+  :linenos:
+  :caption: data_cache::send_write_request() 函数
+  :name: code-data_cache-send_write_request
+
+  // Sends write request to lower level memory (write or writeback)
+  /*
+  将数据写请求一同发送至下一级存储。这里需要做的是将写请求类型 WRITE_REQUEST_SENT 或 
+  WRITE_BACK_REQUEST_SENT 放入 events，并将数据请求 mf 放入 m_miss_queue中，等待下
+  一时钟周期 baseline_cache::cycle() 将队首的数据请求 mf 发送给下一级存储。
+  */
+  void data_cache::send_write_request(mem_fetch *mf, cache_event request,
+                                      unsigned time,
+                                      std::list<cache_event> &events) {
+    events.push_back(request);
+    // 在 baseline_cache::cycle() 中，会将 m_miss_queue 队首的数据包 mf 传递给下
+    // 一级存储。
+    m_miss_queue.push_back(mf);
+    mf->set_status(m_miss_queue_status, time);
+  }
+
+.. code-block:: c
+  :lineno-start: 0
+  :emphasize-lines: 0
+  :linenos:
+  :caption: data_cache::wr_hit_wb() 函数
+  :name: code-data_cache-wr_hit_wb
+
+  /****** Write-hit functions (Set by config file) ******/
+
+  // Write-back hit: Mark block as modified
+  /*
+  若 Write Hit 时采取 write-back 策略，则需要将数据单写入 cache，不需要直接将数据写入
+  下一级存储。等到新数据 fill 进来时，再将旧数据逐出并写入下一级存储。
+  */
+  cache_request_status data_cache::wr_hit_wb(new_addr_type addr,
+                                             unsigned cache_index, mem_fetch *mf,
+                                             unsigned time,
+                                             std::list<cache_event> &events,
+                                             enum cache_request_status status) {
+    // m_config.block_addr(addr): 
+    //     return addr & ~(new_addr_type)(m_line_sz - 1);
+    // |-------|-------------|--------------|
+    //            set_index   offset in-line
+    // |<--------tag--------> 0 0 0 0 0 0 0 |
+    // write-back 策略不需要直接将数据写入下一级存储，因此不需要调用miss_queue_full()
+    // 以及 send_write_request() 函数来发送写回请求到下一级存储。
+    new_addr_type block_addr = m_config.block_addr(addr);
+    // 更新 tag_array 的状态，包括更新 LRU 状态，设置逐出的 block 或 sector 等。
+    m_tag_array->access(block_addr, time, cache_index, mf);
+    cache_block_t *block = m_tag_array->get_block(cache_index);
+    // 如果 block 不是 modified line，则增加 dirty 计数。因为如果这个时候 block 不是
+    // modified line，说明这个 block 是 clean line，而现在要写入数据，因此需要将这个
+    // block 设置为 modified line。这样的话，dirty 计数就需要增加。但如果 block 已经
+    // 是 modified line，则不需要增加 dirty 计数，因为这个 block 在上次变成 dirty 的
+    // 时候，dirty 计数已经增加过了。
+    if (!block->is_modified_line()) {
+      m_tag_array->inc_dirty();
+    }
+    // 设置 block 的状态为 modified，即将 block 设置为 MODIFIED。这样的话，下次再有
+    // 数据请求访问这个 block 的时候，就可以直接从 cache 中读取数据，而不需要再次访问
+    // 下一级存储。当然，当有下次填充进这个 block 的数据请求时（block 的 tag 与请求的
+    // tag 不一致），由于这个 block 的状态已经被设置为 modified，因此需要将此 block 
+    // 的数据逐出并写回到下一级存储。
+    block->set_status(MODIFIED, mf->get_access_sector_mask());
+    block->set_byte_mask(mf);
+    // 更新一个 cache block 的状态为可读。但需要注意的是，这里的可读是指该 sector 可
+    // 读，而不是整个 block 可读。如果一个 sector 内的所有的 byte mask 位全都设置为 
+    // dirty 了，则将该sector 可设置为可读，因为当前的 sector 已经是全部更新为最新值
+    // 了，是可读的。这个函数对所有的数据请求 mf 的所有访问的 sector 进行遍历，这里的
+    // sector 是由 mf 访问的，并由 mf->get_access_sector_mask() 确定。
+    update_m_readable(mf,cache_index);
+
+    return HIT;
+  }
+
+.. code-block:: c
+  :lineno-start: 0
+  :emphasize-lines: 0
+  :linenos:
+  :caption: data_cache::wr_hit_wt() 函数
+  :name: code-data_cache-wr_hit_wt
+
+  // Write-through hit: Directly send request to lower level memory
+  /*
+  若 Write Hit 时采取 write-through 策略的话，则需要将数据不单单写入 cache，还需要直
+  接将数据写入下一级存储。
+  */
+  cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
+                                             unsigned cache_index, mem_fetch *mf,
+                                             unsigned time,
+                                             std::list<cache_event> &events,
+                                             enum cache_request_status status) {
+    // miss_queue_full 检查是否一个 miss 请求能够在当前时钟周期内被处理，当一个请求的
+    // 大小大到 m_miss_queue 放不下时即在当前拍内无法处理，发生 RESERVATION_FAIL。
+    if (miss_queue_full(0)) {
+      m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL);
+      // 如果 miss_queue 满了，但由于 write-through 策略要求数据应该直接写入下一级存
+      // 储，因此这里返回 RESERVATION_FAIL，表示当前时钟周期内无法处理该请求。
+      return RESERVATION_FAIL;  // cannot handle request this cycle
+    }
+    // m_config.block_addr(addr): 
+    //     return addr & ~(new_addr_type)(m_line_sz - 1);
+    // |-------|-------------|--------------|
+    //            set_index   offset in-line
+    // |<--------tag--------> 0 0 0 0 0 0 0 |
+    new_addr_type block_addr = m_config.block_addr(addr);
+    // 更新 tag_array 的状态，包括更新 LRU 状态，设置逐出的 block 或 sector 等。
+    m_tag_array->access(block_addr, time, cache_index, mf);
+    cache_block_t *block = m_tag_array->get_block(cache_index);
+    // 如果 block 不是 modified line，则增加 dirty 计数。因为如果这个时候 block 不是
+    // modified line，说明这个 block 是 clean line，而现在要写入数据，因此需要将这个
+    // block 设置为 modified line。这样的话，dirty 计数就需要增加。但如果 block 已经
+    // 是 modified line，则不需要增加 dirty 计数，因为这个 block 在上次变成 dirty 的
+    // 时候，dirty 计数已经增加过了。
+    if (!block->is_modified_line()) {
+      m_tag_array->inc_dirty();
+    }
+    // 设置 block 的状态为 modified，即将 block 设置为 MODIFIED。这样的话，下次再有
+    // 数据请求访问这个 block 的时候，就可以直接从 cache 中读取数据，而不需要再次访问
+    // 下一级存储。
+    block->set_status(MODIFIED, mf->get_access_sector_mask());
+    block->set_byte_mask(mf);
+    // 更新一个 cache block 的状态为可读。但需要注意的是，这里的可读是指该 sector 可
+    // 读，而不是整个 block 可读。如果一个 sector 内的所有的 byte mask 位全都设置为 
+    // dirty 了，则将该sector 可设置为可读，因为当前的 sector 已经是全部更新为最新值
+    // 了，是可读的。这个函数对所有的数据请求 mf 的所有访问的 sector 进行遍历，这里的
+    // sector 是由 mf 访问的，并由 mf->get_access_sector_mask() 确定。
+    update_m_readable(mf,cache_index);
+
+    // generate a write-through
+    // write-through 策略需要将数据写入 cache 的同时也直接写入下一级存储。这里需要做
+    // 的是将写请求类型 WRITE_REQUEST_SENT 放入 events，并将数据请求放入当前 cache  
+    // 的 m_miss_queue 中，等待baseline_cache::cycle() 将 m_miss_queue 队首的数
+    // 据写请求 mf 发送给下一级存储。
+    send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
+
+    return HIT;
+  }
+
+
+.. code-block:: c
+  :lineno-start: 0
+  :emphasize-lines: 0
+  :linenos:
+  :caption: data_cache::wr_hit_we() 函数
+  :name: code-data_cache-wr_hit_we
+
+  // Write-evict hit: Send request to lower level memory and invalidate
+  // corresponding block
+  /*
+  写逐出命中：向下一级存储发送写回请求并直接逐出相应的 cache block 并设置其无效。
+  */
+  cache_request_status data_cache::wr_hit_we(new_addr_type addr,
+                                             unsigned cache_index, mem_fetch *mf,
+                                             unsigned time,
+                                             std::list<cache_event> &events,
+                                             enum cache_request_status status) {
+    if (miss_queue_full(0)) {
+      m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL);
+      return RESERVATION_FAIL;  // cannot handle request this cycle
+    }
+
+    // generate a write-through/evict
+    cache_block_t *block = m_tag_array->get_block(cache_index);
+    // write-evict 策略需要将 cache block 直接逐出置为无效的同时也直接写入下一级存
+    // 储。这里需要做的是将写请求类型 WRITE_REQUEST_SENT 放入 events，并将数据请求  
+    // 放入 m_miss_queue 中，等待baseline_cache::cycle() 将 m_miss_queue 队首的
+    // 数据写请求 mf 发送给下一级存储。
+    send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
+
+    // Invalidate block
+    // 写逐出，将 cache block 直接逐出置为无效。
+    block->set_status(INVALID, mf->get_access_sector_mask());
+
+    return HIT;
+  }
+
+
+.. code-block:: c
+  :lineno-start: 0
+  :emphasize-lines: 0
+  :linenos:
+  :caption: data_cache::wr_hit_global_we_local_wb() 函数
+  :name: code-data_cache-wr_hit_global_we_local_wb
+
+  // Global write-evict, local write-back: Useful for private caches
+  /*
+  全局访存采用写逐出，本地访存采用写回。这种策略适用于私有缓存。这个策略比较简单，即只
+  需要判断当前的数据请求是全局访存还是本地访存，然后分别采用写逐出和写回策略即可。
+  */
+  enum cache_request_status data_cache::wr_hit_global_we_local_wb(
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      std::list<cache_event> &events, enum cache_request_status status) {
+    bool evict = (mf->get_access_type() ==
+                  GLOBAL_ACC_W); // evict a line that hits on global memory write
+    if (evict)
+      return wr_hit_we(addr, cache_index, mf, time, events,
+                      status); // Write-evict
+    else
+      return wr_hit_wb(addr, cache_index, mf, time, events,
+                      status); // Write-back
+  }
+
+
+
+.. code-block:: c
+  :lineno-start: 0
+  :emphasize-lines: 0
+  :linenos:
+  :caption: data_cache::wr_miss_wa_naive() 函数
+  :name: code-data_cache-wr_miss_wa_naive
+
+  /****** Write-miss functions (Set by config file) ******/
+
+  // Write-allocate miss: Send write request to lower level memory
+  // and send a read request for the same block
+  /*
+  GPGPU-Sim 3.x版本中的naive写分配策略。wr_miss_wa_naive 策略在写 MISS 时，需要先将 
+  mf 数据包直接写入下一级存储，即它会将 WRITE_REQUEST_SENT 放入 events，并将数据请求 
+  mf 放入 m_miss_queue 中，等待下一个周期 baseline_cache::cycle() 将 m_miss_queue 
+  队首的数据包 mf 发送给下一级存储。其次，wr_miss_wa_naive 策略还会将 addr 地址的数据
+  读到当前 cache 中，这时候会执行 send_read_request 函数。但是在 send_read_request 
+  函数中，很有可能这个读请求需要 evict 一个 block 才可以将新的数据读入到 cache 中，这
+  时候如果 evicted block 是 modified line，则需要将这个 evicted block 写回到下一级
+  存储，这时候会根据 do_miss 和 wb 的值执行 send_write_request 函数。
+  */
+  enum cache_request_status data_cache::wr_miss_wa_naive(
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      std::list<cache_event> &events, enum cache_request_status status) {
+    // m_config.block_addr(addr): 
+    //     return addr & ~(new_addr_type)(m_line_sz - 1);
+    // |-------|-------------|--------------|
+    //            set_index   offset in-line
+    // |<--------tag--------> 0 0 0 0 0 0 0 | 
+    new_addr_type block_addr = m_config.block_addr(addr);
+    // 1. 如果是 Sector Cache：
+    //  mshr_addr 函数返回 mshr 的地址，该地址即为地址 addr 的 tag 位 + set index 
+    //  位 + sector offset 位。即除 single sector byte offset 位 以外的所有位。
+    //  |<----------mshr_addr----------->|
+    //                     sector offset  off in-sector
+    //                     |-------------|-----------|
+    //                      \                       /
+    //                       \                     /
+    //  |-------|-------------|-------------------|
+    //             set_index     offset in-line
+    //  |<----tag----> 0 0 0 0|
+    // 2. 如果是 Line Cache：
+    //  mshr_addr 函数返回 mshr 的地址，该地址即为地址 addr 的 tag 位 + set index 
+    //  位。即除 single line byte off-set 位 以外的所有位。
+    //  |<----mshr_addr--->|
+    //                              line offset
+    //                     |-------------------------|
+    //                      \                       /
+    //                       \                     /
+    //  |-------|-------------|-------------------|
+    //             set_index     offset in-line
+    //  |<----tag----> 0 0 0 0|
+    //
+    // mshr_addr 定义：
+    //   new_addr_type mshr_addr(new_addr_type addr) const {
+    //     return addr & ~(new_addr_type)(m_atom_sz - 1);
+    //   }
+    // m_atom_sz = (m_cache_type == SECTOR) ? SECTOR_SIZE : m_line_sz; 
+    // 其中 SECTOR_SIZE = const (32 bytes per sector).
+    new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
+
+    // Write allocate, maximum 3 requests (write miss, read request, write back
+    // request) Conservatively ensure the worst-case request can be handled this
+    // cycle.
+    // MSHR 的 m_data 的 key 中存储了各个合并的地址，probe() 函数主要检查是否命中，
+    // 即主要检查 m_data.keys() 这里面有没有 mshr_addr。
+    bool mshr_hit = m_mshrs.probe(mshr_addr);
+    // 首先查找是否 MSHR 表中有 block_addr 地址的条目。如果存在该条目（命中 MSHR），
+    // 看是否有空间合并进该条目。如果不存在该条目（未命中 MSHR），看是否有其他空间允
+    // 许添加 mshr_addr 这一条目。
+    bool mshr_avail = !m_mshrs.full(mshr_addr);
+    // 在 baseline_cache::cycle() 中，会将 m_miss_queue 队首的数据包 mf 传递给下一
+    // 级存储。因此当遇到 miss 的请求或者写回的请求需要访问下一级存储时，会把 miss 的
+    // 请求放到 m_miss_queue 中。
+    //   bool miss_queue_full(unsigned num_miss) {
+    //     return ((m_miss_queue.size() + num_miss) >= m_config.m_miss_queue_size);
+    //   }
+    
+    // 如果 m_miss_queue.size() 已经不能容下三个数据包的话，有可能无法完成后续动作，
+    // 因为后面最多需要执行三次 send_write_request，在 send_write_request 里每执行
+    // 一次，都需要向 m_miss_queue 添加一个数据包。
+    // Write allocate, maximum 3 requests (write miss, read request, write back
+    // request) Conservatively ensure the worst-case request can be handled this
+    // cycle.
+    if (miss_queue_full(2) || 
+        // 如果 miss_queue_full(2) 返回 false，有空余空间支持执行三次 send_write_
+        // request，那么就需要看 MSHR 是否有可用空间。后面这串判断条件其实可以化简成 
+        // if (miss_queue_full(2) || !mshr_avail)。
+        // 即符合 RESERVATION_FAIL 的条件：
+        //   1. m_miss_queue 不足以放入三个 WRITE_REQUEST_SENT 请求；
+        //   2. MSHR 不能合并请求（未命中，或者没有可用空间添加新条目）。
+        (!(mshr_hit && mshr_avail) &&
+        !(!mshr_hit && mshr_avail &&
+          (m_miss_queue.size() < m_config.m_miss_queue_size)))) {
+      // check what is the exactly the failure reason
+      if (miss_queue_full(2))
+        m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL);
+      else if (mshr_hit && !mshr_avail)
+        m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENRTY_FAIL);
+      else if (!mshr_hit && !mshr_avail)
+        m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENRTY_FAIL);
+      else
+        assert(0);
+
+      // 符合 RESERVATION_FAIL 的条件：
+      //   1. m_miss_queue 不足以放入三个 WRITE_REQUEST_SENT 请求；
+      //   2. MSHR 不能合并请求（未命中，或者没有可用空间添加新条目）。
+      return RESERVATION_FAIL;
+    }
+
+    // send_write_request 执行：
+    //   events.push_back(request);
+    //   // 在 baseline_cache::cycle() 中，会将 m_miss_queue 队首的数据包 mf 传递
+    //   // 给下一级存储。
+    //   m_miss_queue.push_back(mf);
+    //   mf->set_status(m_miss_queue_status, time);
+    // wr_miss_wa_naive 策略在写 MISS 时，需要先将 mf 数据包直接写入下一级存储，即它
+    // 会将 WRITE_REQUEST_SENT 放入 events，并将数据请求 mf 放入 m_miss_queue 中，
+    // 等待下一个周期 baseline_cache::cycle() 将 m_miss_queue 队首的数据包 mf 发送
+    // 给下一级存储。其次，wr_miss_wa_naive 策略还会将 addr 地址的数据读到当前 cache
+    // 中，这时候会执行 send_read_request 函数。但是在 send_read_request 函数中，很
+    // 有可能这个读请求需要 evict 一个 block 才可以将新的数据读入到 cache 中，这时候
+    // 如果 evicted block 是 modified line，则需要将这个 evicted block 写回到下一级
+    // 存储，这时候会根据 do_miss 和 wb 的值执行 send_write_request 函数。
+    send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
+    // Tries to send write allocate request, returns true on success and false on
+    // failure
+    // if(!send_write_allocate(mf, addr, block_addr, cache_index, time, events))
+    //    return RESERVATION_FAIL;
+
+    const mem_access_t *ma =
+        new mem_access_t(m_wr_alloc_type, mf->get_addr(), m_config.get_atom_sz(),
+                        false,  // Now performing a read
+                        mf->get_access_warp_mask(), mf->get_access_byte_mask(),
+                        mf->get_access_sector_mask(), m_gpu->gpgpu_ctx);
+
+    mem_fetch *n_mf =
+        new mem_fetch(*ma, NULL, mf->get_ctrl_size(), mf->get_wid(),
+                      mf->get_sid(), mf->get_tpc(), mf->get_mem_config(),
+                      m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+
+    // 标识是否请求被填充进 MSHR 或者 被放到 m_miss_queue 以在下一个周期发送到下一
+    // 级存储。
+    bool do_miss = false;
+    // wb 变量标识 tag_array::access() 函数中，如果下面的 send_read_request 函数
+    // 发生 MISS，则需要逐出一个 block，并将这个 evicted block 写回到下一级存储。
+    // 如果这个 block 已经是 modified line，则 wb 为 true，因为在将其分配给新访问
+    // 之前，必须将这个已经 modified 的 block 写回到下一级存储。但如果这个 block 
+    // 是 clean line，则 wb 为 false，因为这个 block 不需要写回到下一级存储。这个 
+    // evicted block 的信息被设置在 evicted 中。
+    bool wb = false;
+    evicted_block_info evicted;
+
+    // Send read request resulting from write miss
+    send_read_request(addr, block_addr, cache_index, n_mf, time, do_miss, wb,
+                      evicted, events, false, true);
+
+    events.push_back(cache_event(WRITE_ALLOCATE_SENT));
+
+    // do_miss 标识是否请求被填充进 MSHR 或者 被放到 m_miss_queue 以在下一个周期
+    // 发送到下一级存储。
+    if (do_miss) {
+      // If evicted block is modified and not a write-through
+      // (already modified lower level)
+      // wb 变量标识 tag_array::access() 函数中，如果下面的 send_read_request 函
+      // 数发生 MISS，则需要逐出一个 block，并将这个 evicted block 写回到下一级存
+      // 储。如果这个 block 已经是 modified line，则 wb 为 true，因为在将其分配给
+      // 新访问之前，必须将这个已经 modified 的 block 写回到下一级存储。但如果这个  
+      // block 是 clean line，则 wb 为 false，因为这个 block 不需要写回到下一级存 
+      // 储。这个 evicted block 的信息被设置在 evicted 中。
+      if (wb && (m_config.m_write_policy != WRITE_THROUGH)) {
+        assert(status ==
+              MISS); // SECTOR_MISS and HIT_RESERVED should not send write back
+        mem_fetch *wb = m_memfetch_creator->alloc(
+            evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
+            evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
+            true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1, -1, -1,
+            NULL);
+        // the evicted block may have wrong chip id when advanced L2 hashing  is
+        // used, so set the right chip address from the original mf
+        wb->set_chip(mf->get_tlx_addr().chip);
+        wb->set_partition(mf->get_tlx_addr().sub_partition);
+        // 将 tag_array::access() 函数中逐出的 evicted block 写回到下一级存储。
+        send_write_request(wb, cache_event(WRITE_BACK_REQUEST_SENT, evicted),
+                          time, events);
+      }
+      // 如果 do_miss 为 true，表示请求被填充进 MSHR 或者 被放到 m_miss_queue 以在
+      // 下一个周期发送到下一级存储。即整个写 MISS 处理函数的所有过程全部完成，返回的
+      // 是 write miss 这个原始写请求的状态。
+      return MISS;
+    }
+
+    // 如果 do_miss 为 false，表示请求未被填充进 MSHR 或者 未被放到 m_miss_queue 以
+    // 在下一个周期发送到下一级存储。即整个写 MISS 处理函数没有将读请求发送出去，因此
+    // 返回 RESERVATION_FAIL。
+    return RESERVATION_FAIL;
+  }
+
+.. code-block:: c
+  :lineno-start: 0
+  :emphasize-lines: 0
+  :linenos:
+  :caption: data_cache::wr_miss_no_wa() 函数
+  :name: code-data_cache-wr_miss_no_wa
+
+  // No write-allocate miss: Simply send write request to lower level memory
+  /*
+  No write-allocate miss，这个处理函数仅仅简单地将写请求发送到下一级存储。
+  */
+  enum cache_request_status data_cache::wr_miss_no_wa(
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      std::list<cache_event> &events, enum cache_request_status status) {
+    // 如果 m_miss_queue.size() 已经不能容下一个数据包的话，有可能无法完成后续动作，
+    // 因为后面最多需要执行一次 send_write_request，在 send_write_request 里每执行
+    // 一次，都需要向 m_miss_queue 添加一个数据包。
+    if (miss_queue_full(0)) {
+      m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL);
+      return RESERVATION_FAIL;  // cannot handle request this cycle
+    }
+
+    // on miss, generate write through (no write buffering -- too many threads 
+    // for that)
+    // send_write_request 执行：
+    //   events.push_back(request);
+    //   // 在 baseline_cache::cycle() 中，会将 m_miss_queue 队首的数据包 mf 传递
+    //   // 给下一级存储。
+    //   m_miss_queue.push_back(mf);
+    //   mf->set_status(m_miss_queue_status, time);
+    // No write-allocate miss 策略在写 MISS 时，直接将 mf 数据包直接写入下一级存储。
+    // 这里需要做的是将写请求类型 WRITE_REQUEST_SENT 放入 events，并将数据请求放入  
+    // m_miss_queue 中，等待baseline_cache::cycle() 将 m_miss_queue 队首的数据写
+    // 请求 mf 发送给下一级存储。
+    send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
+
+    return MISS;
+  }
+
+  

@@ -8,7 +8,7 @@
 
 project = 'GPGPU Architectures and Simulations'
 copyright = 'Copyright © 2024 MASA-Laboratory <masa-lab@outlook.com>'
-author = "Jianchao Yang"
+author = "Author Name"
 release = 'v1.0.0'
 affilication = "MASA-Laboratory, NUDT"
 email = "masa-lab@outlook.com"
