@@ -129,7 +129,8 @@ GPGPU-Sim 中真正实现的 `set index 位` 的计算方式是通过 `cache_con
   // m_nset：cache set 的数量。
   // m_line_sz_log2：cache block 的大小的对数。
   // m_nset_log2：cache set 的数量的对数。
-  // m_index_function：set index 的计算函数，GV100 架构中的 L1D Cache 的配置为 LINEAR_SET_FUNCTION。
+  // m_index_function：set index 的计算函数，GV100 架构中的 L1D Cache 的配置为 
+  //                   LINEAR_SET_FUNCTION。
   unsigned cache_config::hash_function(new_addr_type addr, unsigned m_nset,
                                        unsigned m_line_sz_log2,
                                        unsigned m_nset_log2,
@@ -138,8 +139,8 @@ GPGPU-Sim 中真正实现的 `set index 位` 的计算方式是通过 `cache_con
     switch (m_index_function) {
       // ......
       case LINEAR_SET_FUNCTION: {
-        // addr: [m_line_sz_log2-1:0]                            => byte offset
-        // addr: [m_line_sz_log2+m_nset_log2-1:m_line_sz_log2]   => set index
+        // addr: [m_line_sz_log2-1:0]                          => byte offset
+        // addr: [m_line_sz_log2+m_nset_log2-1:m_line_sz_log2] => set index
         set_index = (addr >> m_line_sz_log2) & (m_nset - 1);
         break;
       }
@@ -240,8 +241,8 @@ Cache 的访问状态有以下几种：
   enum cache_request_status {
     // 命中。
     HIT = 0,
-    // 保留成功，当访问地址被映射到一个已经被分配的 cache block/sector 时，cache block/sector 的
-    // 状态被设置为 RESERVED。
+    // 保留成功，当访问地址被映射到一个已经被分配的 cache block/sector 时，block/
+    // sector 的状态被设置为 RESERVED。
     HIT_RESERVED,
     // 未命中。
     MISS,
@@ -598,3 +599,340 @@ Cache 的访问状态
     m_bandwidth_management.use_data_port(mf, access_status, events);
     return access_status;
   }
+
+
+.. code-block:: c
+  :lineno-start: 0
+  :emphasize-lines: 0
+  :linenos:
+  :caption: tag_array::access() 函数
+  :name: code-tag_array-access
+
+  enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
+                                              unsigned &idx, bool &wb,
+                                              evicted_block_info &evicted,
+                                              mem_fetch *mf) {
+    // 对当前 tag_array 的访问次数加 1。
+    m_access++;
+    // 标记当前 tag_array 所属 cache 是否被使用过。一旦有 access() 函数被调用，则
+    // 说明被使用过。
+    is_used = true;
+    shader_cache_access_log(m_core_id, m_type_id, 0); // log accesses to cache
+    // 由于当前函数没有把之前 probe 函数的 cache 访问状态传参进来，这里这个 probe 
+    // 单纯的重新获取这个状态。
+    enum cache_request_status status = probe(addr, idx, mf, mf->is_write());
+    switch (status) {
+      // 新访问是 HIT_RESERVED 的话，不执行动作。
+      case HIT_RESERVED:
+        m_pending_hit++;
+      // 新访问是 HIT 的话，设置第 idx 号 cache line 以及 mask 对应的 sector 的最
+      // 末此访问时间为当前拍。
+      case HIT:
+        m_lines[idx]->set_last_access_time(time, mf->get_access_sector_mask());
+        break;
+      // 新访问是 MISS 的话，说明已经选定 m_lines[idx] 作为逐出并 reserve 新访问的
+      // cache line。
+      case MISS:
+        m_miss++;
+        shader_cache_access_log(m_core_id, m_type_id, 1);  // log cache misses
+        // For V100, L1 cache and L2 cache are all `allocate on miss`.
+        // m_alloc_policy，分配策略：
+        //     对于发送到 L1D cache 的请求：
+        //         如果命中，则立即返回所需数据；
+        //         如果未命中，则分配与缓存未命中相关的资源并将请求转至 L2 cache。
+        //     allocateon-miss/fill 是两种缓存行分配策略。对于 allocateon-miss，需
+        //     为未完成的未命中分配一个缓存行槽、一个 MSHR 和一个未命中队列条目。相比
+        //     之下，allocate-on-fill，当未完成的未命中发生时，需要分配一个 MSHR 和
+        //     一个未命中队列条目，但当所需数据从较低内存级别返回时，会选择受害者缓存
+        //     行槽。在这两种策略中，如果任何所需资源不可用，则会发生预留失败，内存管
+        //     道会停滞。分配的 MSHR 会被保留，直到从 L2 缓存/片外内存中获取数据，而
+        //     未命中队列条目会在未命中请求转发到 L2 缓存后被释放。由于 allocate-on-
+        //     fill 在驱逐之前将受害者缓存行保留在缓存中更长时间，并为未完成的未命中
+        //     保留更少的资源，因此它往往能获得更多的缓存命中和更少的预留失败，从而比 
+        //     allocate-on-miss 具有更好的性能。尽管填充时分配需要额外的缓冲和流控制
+        //     逻辑来按顺序将数据填充到缓存中，但按顺序执行模型和写入驱逐策略使 GPU 
+        //     L1D 缓存对填充时分配很友好，因为在填充时要驱逐受害者缓存时，没有脏数据
+        //     写入 L2。
+        //     详见 paper：
+        //     The Demand for a Sound Baseline in GPU Memory Architecture Research. 
+        //     https://hzhou.wordpress.ncsu.edu/files/2022/12/Hongwen_WDDD2017.pdf
+        //
+        //     For streaming cache: (1) we set the alloc policy to be on-fill 
+        //     to remove all line_alloc_fail stalls. if the whole memory is 
+        //     allocated to the L1 cache, then make the allocation to be on 
+        //     MISS, otherwise, make it ON_FILL to eliminate line allocation 
+        //     fails. i.e. MSHR throughput is the same, independent on the L1
+        //     cache size/associativity So, we set the allocation policy per 
+        //     kernel basis, see shader.cc, max_cta() function. (2) We also 
+        //     set the MSHRs to be equal to max allocated cache lines. This
+        //     is possible by moving TAG to be shared between cache line and 
+        //     MSHR enrty (i.e. for each cache line, there is an MSHR entry 
+        //     associated with it). This is the easiest think we can think of 
+        //     to model (mimic) L1 streaming cache in Pascal and Volta. For 
+        //     more information about streaming cache, see: 
+        //     https://www2.maths.ox.ac.uk/~gilesm/cuda/lecs/VoltaAG_Oxford.pdf
+        //     https://ieeexplore.ieee.org/document/8344474/
+        if (m_config.m_alloc_policy == ON_MISS) {
+          // 访问时遇到 MISS，说明 probe 确定的 idx 号 cache line 需要被逐出来为新
+          // 访问提供 RESERVE 的空间。但是，这里需要判断 idx 号 cache line 是否是 
+          // MODIFIED，如果是的话，需要执行写回，设置写回的标志为 wb = true，设置逐
+          // 出 cache line 的信息。
+          if (m_lines[idx]->is_modified_line()) {
+            // m_lines[idx] 作为逐出并 reserve 新访问的 cache line，如果它的某个 
+            // sector 已经被 MODIFIED，则需要执行写回操作，设置写回标志为 wb = true，
+            // 设置逐出 cache line 的信息。
+            wb = true;
+            evicted.set_info(m_lines[idx]->m_block_addr,
+                            m_lines[idx]->get_modified_size(),
+                            m_lines[idx]->get_dirty_byte_mask(),
+                            m_lines[idx]->get_dirty_sector_mask());
+            // 由于执行写回操作，MODIFIED 造成的 m_dirty 数量应该减1。
+            m_dirty--;
+          }
+          // 执行对新访问的 reserve 操作。
+          m_lines[idx]->allocate(m_config.tag(addr), m_config.block_addr(addr),
+                                time, mf->get_access_sector_mask());
+        }
+        break;
+      // Cache block 有效，但是其中的 byte mask = Cache block[mask] 状态无效，说明
+      // sector 缺失。
+      case SECTOR_MISS:
+        assert(m_config.m_cache_type == SECTOR);
+        m_sector_miss++;
+        shader_cache_access_log(m_core_id, m_type_id, 1);  // log cache misses
+        // For V100, L1 cache and L2 cache are all `allocate on miss`.
+        if (m_config.m_alloc_policy == ON_MISS) {
+          bool before = m_lines[idx]->is_modified_line();
+          // 设置 m_lines[idx] 为新访问分配一个 sector。
+          ((sector_cache_block *)m_lines[idx])
+              ->allocate_sector(time, mf->get_access_sector_mask());
+          if (before && !m_lines[idx]->is_modified_line()) {
+            m_dirty--;
+          }
+        }
+        break;
+      // probe函数中：
+      // all_reserved 被初始化为 true，是指所有 cache line 都没有能够逐出来为新访问
+      // 提供 RESERVE 的空间，这里一旦满足函数两个 if 条件，说明 cache line 可以被逐
+      // 出来提供空间供 RESERVE 新访问，这里 all_reserved 置为 false。
+      // 而一旦最终 all_reserved 仍旧保持 true 的话，就说明 cache line 不可被逐出，
+      // 发生 RESERVATION_FAIL。因此这里不执行任何操作。
+      case RESERVATION_FAIL:
+        m_res_fail++;
+        shader_cache_access_log(m_core_id, m_type_id, 1);  // log cache misses
+        break;
+      default:
+        fprintf(stderr,
+                "tag_array::access - Error: Unknown"
+                "cache_request_status %d\n",
+                status);
+        abort();
+    }
+    return status;
+  }
+
+
+
+
+.. code-block:: c
+  :lineno-start: 0
+  :emphasize-lines: 0
+  :linenos:
+  :caption: data_cache::rd_miss_base() 函数
+  :name: code-data_cache-rd_miss_base
+
+  /****** Read miss functions (Set by config file) ******/
+
+  // Baseline read miss: Send read request to lower level memory,
+  // perform write-back as necessary
+  /*
+  READ MISS 操作。
+  */
+  enum cache_request_status data_cache::rd_miss_base(
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      std::list<cache_event> &events, enum cache_request_status status) {
+    // 读 miss 时，就需要将数据请求发送至下一级存储。这里或许需要真实地向下一级存储发
+    // 送读请求，也或许由于 mshr 的存在，可以将数据请求合并进去，这样就不需要真实地向
+    // 下一级存储发送读请求。
+    // miss_queue_full 检查是否一个 miss 请求能够在当前时钟周期内被处理，当一个请求
+    // 的大小大到 m_miss_queue 放不下时即在当前拍内无法处理，发生 RESERVATION_FAIL。
+    if (miss_queue_full(1)) {
+      // cannot handle request this cycle (might need to generate two requests).
+      m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL);
+      return RESERVATION_FAIL;
+    }
+
+    // m_config.block_addr(addr): 
+    //     return addr & ~(new_addr_type)(m_line_sz - 1);
+    // |-------|-------------|--------------|
+    //            set_index   offset in-line
+    // |<--------tag--------> 0 0 0 0 0 0 0 |
+    new_addr_type block_addr = m_config.block_addr(addr);
+    // 标识是否请求被填充进 MSHR 或者 被放到 m_miss_queue 以在下一个周期发送到下一
+    // 级存储。
+    bool do_miss = false;
+    // wb 代表是否需要写回（当一个被逐出的 cache block 被 MODIFIED 时，需要写回到
+    // 下一级存储），evicted代表被逐出的 cache line 的信息。
+    bool wb = false;
+    evicted_block_info evicted;
+    // READ MISS 处理函数，检查 MSHR 是否命中或者 MSHR 是否可用，依此判断是否需要
+    // 向下一级存储发送读请求。
+    send_read_request(addr, block_addr, cache_index, mf, time, do_miss, wb,
+                      evicted, events, false, false);
+    // 如果 send_read_request 中数据请求已经被加入到 MSHR，或是原先存在该条目将请
+    // 求合并进去，或是原先不存在该条目将请求插入进去，那么 do_miss 为 true，代表
+    // 要将某个cache block逐出并接收 mf 从下一级存储返回的数据。
+    // m_lines[idx] 作为逐出并 reserve 新访问的 cache line，如果它的某个 sector 
+    // 已经被MODIFIED，则需要执行写回操作，设置写回的标志为 wb = true。
+    if (do_miss) {
+      // If evicted block is modified and not a write-through
+      // (already modified lower level).
+      // 这里如果 cache 的写策略为写直达，就不需要在读 miss 时将被逐出的 MODIFIED 
+      // cache block 写回到下一级存储，因为这个 cache block 在被 MODIFIED 的时候
+      // 已经被 write-through 到下一级存储了。
+      if (wb && (m_config.m_write_policy != WRITE_THROUGH)) {
+        // 发送写请求，将 MODIFIED 的被逐出的 cache block 写回到下一级存储。
+        // 在 V100 中，
+        //     m_wrbk_type：L1 cache 为 L1_WRBK_ACC，L2 cache 为 L2_WRBK_ACC。
+        //     m_write_policy：L1 cache 为 WRITE_THROUGH。
+        mem_fetch *wb = m_memfetch_creator->alloc(
+            evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
+            evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
+            true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1, -1, -1,
+            NULL);
+        // the evicted block may have wrong chip id when advanced L2 hashing 
+        // is used, so set the right chip address from the original mf.
+        wb->set_chip(mf->get_tlx_addr().chip);
+        wb->set_partition(mf->get_tlx_addr().sub_partition);
+        // 将数据写请求一同发送至下一级存储。
+        // 需要做的是将读请求类型 WRITE_BACK_REQUEST_SENT放 入events，并将数据请
+        // 求 mf 放入当前 cache 的 m_miss_queue 中，等 baseline_cache::cycle() 
+        // 将队首的数据请求 mf 发送给下一级存储。
+        send_write_request(wb, WRITE_BACK_REQUEST_SENT, time, events);
+      }
+      return MISS;
+    }
+    return RESERVATION_FAIL;
+  }
+
+.. code-block:: c
+  :lineno-start: 0
+  :emphasize-lines: 0
+  :linenos:
+  :caption: baseline_cache::send_read_request() 函数
+  :name: code-baseline_cache-send_read_request
+
+  // Read miss handler. Check MSHR hit or MSHR available
+  /*
+  READ MISS 处理函数，检查 MSHR 是否命中或者 MSHR 是否可用，依此判断是否需要向下一
+  级存储发送读请求。
+  */
+  void baseline_cache::send_read_request(new_addr_type addr,
+                                        new_addr_type block_addr,
+                                        unsigned cache_index, mem_fetch *mf,
+                                        unsigned time, bool &do_miss, bool &wb,
+                                        evicted_block_info &evicted,
+                                        std::list<cache_event> &events,
+                                        bool read_only, bool wa) {
+    //1. 如果是 Sector Cache：
+    //  mshr_addr 函数返回 mshr 的地址，该地址即为地址 addr 的 tag 位 + set index 
+    //  位 + sector offset 位。即除 single sector byte offset 位 以外的所有位。
+    //  |<----------mshr_addr----------->|
+    //                     sector offset  off in-sector
+    //                     |-------------|-----------|
+    //                      \                       /
+    //                       \                     /
+    //  |-------|-------------|-------------------|
+    //             set_index     offset in-line
+    //  |<----tag----> 0 0 0 0|
+    //2. 如果是 Line Cache：
+    //  mshr_addr 函数返回 mshr 的地址，该地址即为地址 addr 的 tag 位 + set index 
+    //  位。即除 single line byte off-set 位 以外的所有位。
+    //  |<----mshr_addr--->|
+    //                              line offset
+    //                     |-------------------------|
+    //                      \                       /
+    //                       \                     /
+    //  |-------|-------------|-------------------|
+    //             set_index     offset in-line
+    //  |<----tag----> 0 0 0 0|
+    //
+    //mshr_addr 定义：
+    //   new_addr_type mshr_addr(new_addr_type addr) const {
+    //     return addr & ~(new_addr_type)(m_atom_sz - 1);
+    //   }
+    // m_atom_sz = (m_cache_type == SECTOR) ? SECTOR_SIZE : m_line_sz; 
+    // 其中 SECTOR_SIZE = const (32 bytes per sector).
+    new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
+    // 这里实际上是 MSHR 查找是否已经有 mshr_addr 的请求被合并到 MSHR。如果已经被挂
+    // 起则 mshr_hit = true。需要注意，MSHR 中的条目是以 mshr_addr 为索引的，即来自
+    // 同一个 line（对于非 Sector Cache）或者来自同一个 sector（对于 Sector Cache）
+    // 的事务被合并，因为这种 cache 所请求的最小单位分别是一个 line 或者一个 sector，
+    // 因此没必要发送那么多事务，只需要发送一次即可。
+    bool mshr_hit = m_mshrs.probe(mshr_addr);
+    // 如果 mshr_addr 在 MSHR 中已存在条目，m_mshrs.full 检查是否该条目的合并数量已
+    // 达到最大合并数；如果 mshr_addr 在 MSHR 中不存在条目，则检查是否有空闲的 MSHR 
+    // 条目可以将 mshr_addr 插入进 MSHR。
+    bool mshr_avail = !m_mshrs.full(mshr_addr);
+    if (mshr_hit && mshr_avail) {
+      // 如果 MSHR 命中，且 mshr_addr 对应条目的合并数量没有达到最大合并数，则将数据
+      // 请求 mf 加入到 MSHR 中。
+      if (read_only)
+        m_tag_array->access(block_addr, time, cache_index, mf);
+      else
+        // 更新 tag_array 的状态，包括更新 LRU 状态，设置逐出的 block 或 sector 等。
+        m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+
+      // 将 mshr_addr 地址的数据请求 mf 加入到 MSHR 中。因为命中 MSHR，说明前面已经
+      // 有对该数据的请求发送到下一级缓存了，因此这里只需要等待前面的请求返回即可。
+      m_mshrs.add(mshr_addr, mf);
+      m_stats.inc_stats(mf->get_access_type(), MSHR_HIT);
+      // 标识是否请求被填充进 MSHR 或者 被放到 m_miss_queue 以在下一个周期发送到下一
+      // 级存储。
+      do_miss = true;
+
+    } else if (!mshr_hit && mshr_avail &&
+              (m_miss_queue.size() < m_config.m_miss_queue_size)) {
+      // 如果 MSHR 未命中，但有空闲的 MSHR 条目可以将 mshr_addr 插入进 MSHR，则将数
+      // 据请求 mf 插入到 MSHR 中。
+      // 对于 L1 cache 和 L2 cache，read_only 为 false，对于 read_only_cache 来说，
+      // read_only 为true。
+      if (read_only)
+        m_tag_array->access(block_addr, time, cache_index, mf);
+      else
+        // 更新 tag_array 的状态，包括更新 LRU 状态，设置逐出的 block 或 sector 等。
+        m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+
+      // 将 mshr_addr 地址的数据请求 mf 加入到 MSHR 中。因为没有命中 MSHR，因此还需
+      // 要将该数据的请求发送到下一级缓存。
+      m_mshrs.add(mshr_addr, mf);
+      // if (m_config.is_streaming() && m_config.m_cache_type == SECTOR) {
+      //   m_tag_array->add_pending_line(mf);
+      // }
+      // 设置 m_extra_mf_fields[mf]，意味着如果 mf 在 m_extra_mf_fields 中存在，即 
+      // mf 等待着下一级存储的数据回到当前缓存填充。
+      m_extra_mf_fields[mf] = extra_mf_fields(
+          mshr_addr, mf->get_addr(), cache_index, mf->get_data_size(), m_config);
+      mf->set_data_size(m_config.get_atom_sz());
+      mf->set_addr(mshr_addr);
+      // mf 为 miss 的请求，加入 miss_queue，MISS 请求队列。
+      // 在 baseline_cache::cycle() 中，会将 m_miss_queue 队首的数据包 mf 传递给下
+      // 一层存储。因为没有命中 MSHR，说明前面没有对该数据的请求发送到下一级缓存，
+      // 因此这里需要把该请求发送给下一级存储。
+      m_miss_queue.push_back(mf);
+      mf->set_status(m_miss_queue_status, time);
+      // 在 V100 配置中，wa 对 L1/L2/read_only cache 均为 false。
+      if (!wa) events.push_back(cache_event(READ_REQUEST_SENT));
+      // 标识是否请求被填充进 MSHR 或者 被放到 m_miss_queue 以在下一个周期发送到下一
+      // 级存储。
+      do_miss = true;
+    } else if (mshr_hit && !mshr_avail)
+      // 如果 MSHR 命中，但 mshr_addr 对应条目的合并数量达到了最大合并数。
+      m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENRTY_FAIL);
+    else if (!mshr_hit && !mshr_avail)
+      // 如果 MSHR 未命中，且 mshr_addr 没有空闲的 MSHR 条目可将 mshr_addr 插入。
+      m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENRTY_FAIL);
+    else
+      assert(0);
+  }
+
