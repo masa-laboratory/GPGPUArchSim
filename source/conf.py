@@ -52,7 +52,7 @@ epub_show_urls = 'footnote'
 
 # -- Options for LaTex output
 # "atendofbody": r"\vspace*{\fill}\begin{flushright}\textbf{Jianchao Yang}\\\textbf{MASA-Laboratory, NUDT}\\\textbf{masa-lab@outlook.com}\end{flushright}",
-    
+
 latex_elements = {
     "papersize": "a4paper",
     'fncychap': r'\usepackage[Bjornstrup]{fncychap}',
@@ -89,5 +89,7 @@ latex_elements = {
 \tableofcontents
 ''',
     'classoptions': ',oneside',
-
+    'sphinxsetup': 'VerbatimColor={RGB}{238, 238, 221}, verbatimwrapslines=true,',
 }
+
+pygments_style = 'perldoc'
