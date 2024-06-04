@@ -273,6 +273,12 @@ Cache 的访问状态
 
 在访问 Cache 的时候，会调用 ``access()`` 函数，例如 ``m_L2cache->access()``，``m_L1I->access()``，``m_L1D->access()`` 等。
 
+``access()`` 函数主要完成以下几个步骤：
+
+- 计算地址 ``addr`` 映射到 Cache 的 Block 地址 ``new_addr_type block_addr``。
+- 根据 ``new_addr_type block_addr`` 和访问 Cache 的数据包 ``mem_fetch *mf`` 判断访问 Cache 的返回状态。
+- 根据返回状态执行相应的操作，包括：``m_wr_hit``、``m_wr_miss``、``m_rd_hit``、``m_rd_miss``。
+
 .. code-block:: c
   :lineno-start: 0
   :emphasize-lines: 0
