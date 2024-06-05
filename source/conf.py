@@ -6,7 +6,7 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = 'GPGPU Architectures and Simulations'
+project = 'GPGPU-Sim User Manual'
 copyright = 'Copyright © 2024 MASA-Laboratory <masa-lab@outlook.com>'
 author = "Author Name"
 release = 'v1.0.0'
