@@ -1,10 +1,24 @@
 <h2 align="center"> GPGPU-Sim User Manual </h2>
 
-<p align="center">
-<a href="https://github.com/masa-laboratory/GPGPUArchSim/blob/latex/README_zh_CN.md">中文简体 README</a> | <a href="mailto:masa-lab@outlook.com">Contact Us</a>
-</p>
+<div align="center">
+  <p style="margin-top: 10px;">
+    <a href="https://github.com/masa-laboratory/GPGPUArchSim/actions/workflows/pages/pages-build-deployment">
+      <img src="https://github.com/masa-laboratory/GPGPUArchSim/actions/workflows/pages/pages-build-deployment/badge.svg" alt="pages-build-deployment"/>
+    </a>
+  </p>
+</div>
 
-Welcome to the GPGPU-Sim User Manual repository! This is a detailed document prepared for developers and researchers who use [GPGPU-Sim](https://github.com/accel-sim/gpgpu-sim_distribution.git) and are interested in GPU architecture and its simulation implementation. Unlike the [official manual](http://gpgpu-sim.org/manual/index.php/Main_Page), this manual focuses on code-level implementation details, providing users with resources to more easily get started with GPGPU-Sim.
+<div align="center">
+  <p>
+    <a href="https://github.com/masa-laboratory/GPGPUArchSim/blob/latex/README_zh_CN.md">中文简体 README</a> 
+    <span style="margin: 0 10px;">|</span>
+    <a href="mailto:masa-lab@outlook.com">Contact Us</a>
+    <span style="margin: 0 10px;">|</span>
+    <a href="https://masa-laboratory.github.io/GPGPUArchSim/">Manual Release Page</a>
+  </p>
+</div>
+
+Welcome to the [GPGPU-Sim User Manual](https://masa-laboratory.github.io/GPGPUArchSim/) repository! This is a detailed document prepared for developers and researchers who use [GPGPU-Sim](https://github.com/accel-sim/gpgpu-sim_distribution.git) and are interested in GPU architecture and its simulation implementation. Unlike the [official manual](http://gpgpu-sim.org/manual/index.php/Main_Page), [this manual](https://masa-laboratory.github.io/GPGPUArchSim/) focuses on code-level implementation details, providing users with resources to more easily get started with GPGPU-Sim.
 
 [GPGPU-Sim](https://github.com/accel-sim/gpgpu-sim_distribution.git) is a powerful graphics processing unit (GPU) simulator that allows users to simulate program execution in various Nvidia GPU architectures. It is a valuable tool for studying GPU performance optimization, architecture modifications, and parallel computing models.
 
