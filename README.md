@@ -5,6 +5,12 @@
     <a href="https://github.com/masa-laboratory/GPGPUArchSim/actions/workflows/pages/pages-build-deployment">
       <img src="https://github.com/masa-laboratory/GPGPUArchSim/actions/workflows/pages/pages-build-deployment/badge.svg" alt="pages-build-deployment"/>
     </a>
+    <a href="https://github.com/ConvolutedDog/gpgpu-sim-comments/actions/workflows/cmake.yml">
+      <img src="https://github.com/ConvolutedDog/gpgpu-sim-comments/actions/workflows/cmake.yml/badge.svg?branch=dev" alt="Short-Tests-CMake"/>
+    </a>
+    <a href="https://github.com/ConvolutedDog/gpgpu-sim-comments/actions/workflows/main.yml">
+      <img src="https://github.com/ConvolutedDog/gpgpu-sim-comments/actions/workflows/main.yml/badge.svg?branch=dev" alt="Short-Tests"/>
+    </a>
   </p>
 </div>
 
