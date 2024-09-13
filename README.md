@@ -12,6 +12,8 @@
   <p>
     <a href="https://github.com/masa-laboratory/GPGPUArchSim/blob/latex/README_zh_CN.md">中文简体 README</a> 
     <span style="margin: 0 10px;">|</span>
+    <a href="https://github.com/ConvolutedDog/gpgpu-sim-comments">10万+中文注释 GPGPU-Sim 代码</a>
+    <span style="margin: 0 10px;">|</span>
     <a href="mailto:masa-lab@outlook.com">Contact Us</a>
     <span style="margin: 0 10px;">|</span>
     <a href="https://masa-laboratory.github.io/GPGPUArchSim/">Manual Release Page</a>
